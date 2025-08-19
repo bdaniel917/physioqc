@@ -261,6 +261,275 @@ def append_event(out_path: Path, event: dict):
 
 
 # -------------------------
+# Decoder Integration
+# -------------------------
+
+@dataclass
+class DecoderConfig:
+    name: str
+    type: str  # "python", "subprocess", "socket"
+    path: str | None = None
+    args: List[str] | None = None
+    timeout: float = 5.0
+    buffer_size: int = 1000
+
+class DecoderInterface:
+    """Interface for external decoders."""
+    
+    def __init__(self, config: DecoderConfig):
+        self.config = config
+        self.process = None
+        self.decoder_output = []
+        
+    def start(self):
+        """Start the decoder process."""
+        if self.config.type == "subprocess" and self.config.path:
+            import subprocess
+            cmd = [self.config.path] + (self.config.args or [])
+            self.process = subprocess.Popen(
+                cmd, 
+                stdin=subprocess.PIPE, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE,
+                text=True
+            )
+        elif self.config.type == "python":
+            # Python module import
+            import importlib
+            try:
+                module = importlib.import_module(self.config.path)
+                self.decoder = module
+                if hasattr(module, 'initialize'):
+                    module.initialize()
+            except ImportError:
+                raise ValueError(f"Could not import decoder module: {self.config.path}")
+    
+    def process_data(self, data: NDArray[np.float32], timestamp: int) -> dict | None:
+        """Process data through decoder and return results."""
+        if self.config.type == "subprocess" and self.process:
+            try:
+                # Send data to subprocess
+                data_str = ",".join(map(str, data.flatten()))
+                input_line = f"{timestamp},{data_str}\n"
+                self.process.stdin.write(input_line)
+                self.process.stdin.flush()
+                
+                # Read output with timeout
+                import select
+                if select.select([self.process.stdout], [], [], self.config.timeout)[0]:
+                    output = self.process.stdout.readline().strip()
+                    if output:
+                        return self._parse_decoder_output(output, timestamp)
+            except Exception as e:
+                typer.echo(f"Decoder error: {e}")
+                
+        elif self.config.type == "python" and hasattr(self, 'decoder'):
+            try:
+                if hasattr(self.decoder, 'process'):
+                    result = self.decoder.process(data, timestamp)
+                    return result
+            except Exception as e:
+                typer.echo(f"Python decoder error: {e}")
+        
+        return None
+    
+    def _parse_decoder_output(self, output: str, timestamp: int) -> dict:
+        """Parse decoder output into structured format."""
+        try:
+            # Simple CSV parsing - can be extended for different formats
+            parts = output.split(',')
+            if len(parts) >= 2:
+                return {
+                    "timestamp": timestamp,
+                    "decoder": self.config.name,
+                    "prediction": parts[0],
+                    "confidence": float(parts[1]) if len(parts) > 1 else 1.0,
+                    "raw_output": output
+                }
+        except:
+            pass
+        
+        return {
+            "timestamp": timestamp,
+            "decoder": self.config.name,
+            "prediction": "unknown",
+            "confidence": 0.0,
+            "raw_output": output
+        }
+    
+    def stop(self):
+        """Stop the decoder process."""
+        if self.process:
+            self.process.terminate()
+            self.process.wait()
+
+def compute_performance_metrics(predictions: List[dict], ground_truth: List[str] | None = None) -> dict:
+    """Compute decoder performance metrics."""
+    if not predictions:
+        return {"accuracy": 0.0, "latency_ms": 0.0, "throughput_hz": 0.0}
+    
+    # Basic metrics
+    total_predictions = len(predictions)
+    avg_confidence = sum(p.get("confidence", 0.0) for p in predictions) / total_predictions
+    
+    # Latency calculation (if timestamps available)
+    latencies = []
+    for i in range(1, len(predictions)):
+        if "timestamp" in predictions[i] and "timestamp" in predictions[i-1]:
+            latency = (predictions[i]["timestamp"] - predictions[i-1]["timestamp"]) / 1e6  # to ms
+            latencies.append(latency)
+    
+    avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
+    throughput = 1000.0 / avg_latency if avg_latency > 0 else 0.0
+    
+    # Accuracy (if ground truth provided)
+    accuracy = 0.0
+    if ground_truth and len(ground_truth) == len(predictions):
+        correct = sum(1 for p, gt in zip(predictions, ground_truth) 
+                     if p.get("prediction") == gt)
+        accuracy = correct / len(predictions)
+    
+    return {
+        "accuracy": round(accuracy, 3),
+        "avg_confidence": round(avg_confidence, 3),
+        "latency_ms": round(avg_latency, 2),
+        "throughput_hz": round(throughput, 1),
+        "total_predictions": total_predictions
+    }
+
+# -------------------------
+# Multi-Dataset Support
+# -------------------------
+
+@dataclass
+class DataSource:
+    type: str  # "file", "lsl", "simulated", "bci_competition"
+    path: str | None = None
+    stream_name: str | None = None
+    duration: float | None = None
+    channels: List[str] | None = None
+
+def load_data_source(source: str, **kwargs) -> Tuple[NDArray[np.float32], List[str]]:
+    """Load data from various sources."""
+    if source.startswith("file:"):
+        # File-based sources
+        file_path = source[5:]
+        return load_signal(Path(file_path))
+    
+    elif source.startswith("lsl:"):
+        # LabStreamingLayer streams (OpenBCI, etc.)
+        stream_name = source[4:]
+        return load_lsl_stream(stream_name, **kwargs)
+    
+    elif source.startswith("simulated:"):
+        # Simulated data with parameters
+        params = source[10:].split(",")
+        return load_simulated_data(params, **kwargs)
+    
+    elif source.startswith("bci_competition:"):
+        # BCI Competition datasets
+        dataset_info = source[15:].split(",")
+        return load_bci_competition_data(dataset_info, **kwargs)
+    
+    else:
+        # Default to file
+        return load_signal(Path(source))
+
+def load_lsl_stream(stream_name: str, duration: float = 10.0) -> Tuple[NDArray[np.float32], List[str]]:
+    """Load data from LSL stream (OpenBCI, etc.)."""
+    try:
+        import pylsl
+        
+        # Find the stream
+        streams = pylsl.resolve_streams()
+        target_stream = None
+        for stream in streams:
+            if stream_name.lower() in stream.name().lower():
+                target_stream = stream
+                break
+        
+        if not target_stream:
+            raise ValueError(f"LSL stream '{stream_name}' not found")
+        
+        # Create inlet and collect data
+        inlet = pylsl.StreamInlet(target_stream)
+        inlet.open_stream()
+        
+        typer.echo(f"Collecting {duration}s from LSL stream: {target_stream.name()}")
+        
+        # Collect data
+        data = []
+        start_time = time.time()
+        
+        while time.time() - start_time < duration:
+            sample, timestamp = inlet.pull_sample()
+            data.append(sample)
+            time.sleep(0.001)  # 1ms
+        
+        inlet.close_stream()
+        
+        if not data:
+            raise ValueError("No data collected from LSL stream")
+        
+        # Convert to numpy array
+        data_array = np.array(data, dtype=np.float32).T  # (n_channels, n_samples)
+        channels = [f"ch{i}" for i in range(data_array.shape[0])]
+        
+        typer.echo(f"Collected {data_array.shape[1]} samples from {len(channels)} channels")
+        return data_array, channels
+        
+    except ImportError:
+        raise ImportError("pylsl not installed. Install with: pip install pylsl")
+    except Exception as e:
+        raise ValueError(f"Failed to load LSL stream: {e}")
+
+def load_simulated_data(params: List[str], **kwargs) -> Tuple[NDArray[np.float32], List[str]]:
+    """Load simulated data with specified parameters."""
+    # Parse parameters: simulated:fs=250,secs=10,n_ch=4,line_freq=60
+    config = {}
+    for param in params:
+        if "=" in param:
+            key, value = param.split("=", 1)
+            try:
+                if "." in value:
+                    config[key] = float(value)
+                else:
+                    config[key] = int(value)
+            except ValueError:
+                config[key] = value
+    
+    # Default values
+    fs = config.get("fs", 250)
+    secs = config.get("secs", 10.0)
+    n_ch = config.get("n_ch", 4)
+    line_freq = config.get("line_freq", 60)
+    seed = config.get("seed", None)
+    
+    # Generate simulated data
+    data = simulate_signal(secs=secs, fs=fs, n_ch=n_ch, line_freq=line_freq, seed=seed)
+    channels = [f"ch{i}" for i in range(n_ch)]
+    
+    typer.echo(f"Generated simulated data: {n_ch} channels, {secs}s, {fs}Hz")
+    return data, channels
+
+def load_bci_competition_data(dataset_info: List[str], **kwargs) -> Tuple[NDArray[np.float32], List[str]]:
+    """Load BCI Competition datasets."""
+    # This is a placeholder for BCI Competition dataset loading
+    # In a real implementation, you'd download and load specific datasets
+    
+    dataset_name = dataset_info[0] if dataset_info else "bci_iv_2a"
+    
+    typer.echo(f"BCI Competition dataset '{dataset_name}' loading not yet implemented")
+    typer.echo("This would download and load the specified BCI Competition dataset")
+    
+    # For now, return simulated data that mimics BCI Competition format
+    # 22 channels, 250Hz, 4 classes
+    data = simulate_signal(secs=10.0, fs=250, n_ch=22, line_freq=50, seed=42)
+    channels = [f"C{i+1:02d}" for i in range(22)]  # C01, C02, ..., C22
+    
+    return data, channels
+
+# -------------------------
 # Ingest/QC
 # -------------------------
 
@@ -291,7 +560,7 @@ def load_signal(path: Path) -> Tuple[NDArray[np.float32], List[str]]:
 
 @app.command()
 def ingest(
-    path: Path = typer.Option(..., exists=True, help="Input .npy or .csv (shape: n_ch×n or n×n_ch)"),
+    source: str = typer.Option(..., help="Data source: file:path, lsl:stream_name, simulated:params, or bci_competition:dataset"),
     out_dir: Path = typer.Option(Path("runs/demo1"), help="Output dir"),
     fs: int = typer.Option(250, help="Sampling rate (Hz)"),
     win: str = typer.Option("1s", help="Window (e.g., 1s, 500ms)"),
@@ -301,6 +570,9 @@ def ingest(
     th_burst_z: float = typer.Option(6.0, help="Burst RMS z threshold"),
     th_flat_std: float = typer.Option(1e-3, help="Flatline std threshold"),
     th_clip_pct: float = typer.Option(0.05, help="Clip percentage threshold"),
+    decode: str | None = typer.Option(None, help="Decoder to use (e.g., 'python:my_decoder' or 'subprocess:/path/to/decoder')"),
+    decode_args: str | None = typer.Option(None, help="Additional arguments for decoder"),
+    duration: float = typer.Option(None, help="Duration for LSL streams (seconds)"),
 ):
     """Compute SQIs + auto-events over sliding windows; write Parquet/JSONL/JSON."""
     # parse durations
@@ -327,8 +599,36 @@ def ingest(
     ensure_out_dir(out_dir)
     session_id = str(uuid.uuid4())
 
-    x, channels = load_signal(path)
+    # Load data from specified source
+    try:
+        if duration:
+            x, channels = load_data_source(source, duration=duration)
+        else:
+            x, channels = load_data_source(source)
+    except Exception as e:
+        typer.echo(f"Failed to load data source '{source}': {e}")
+        raise typer.Exit(code=1)
+    
     n_ch, n = x.shape
+
+    # Initialize decoder if specified
+    decoder = None
+    decode_rows = []
+    if decode:
+        try:
+            decode_type, decode_path = decode.split(":", 1)
+            decoder_config = DecoderConfig(
+                name=decode_path.split("/")[-1] if "/" in decode_path else decode_path,
+                type=decode_type,
+                path=decode_path,
+                args=decode_args.split() if decode_args else None
+            )
+            decoder = DecoderInterface(decoder_config)
+            decoder.start()
+            typer.echo(f"Started decoder: {decoder_config.name}")
+        except Exception as e:
+            typer.echo(f"Failed to start decoder: {e}")
+            decoder = None
 
     # Prepare outputs
     save_provenance(out_dir, session_id, cmd, cfg, channels)
@@ -370,6 +670,19 @@ def ingest(
             }
             sqi["composite_sqi"] = composite_sqi(sqi)
             sqi_rows.append(sqi)
+
+            # Process through decoder if available
+            if decoder:
+                try:
+                    # Use the current window data for decoding
+                    decode_result = decoder.process_data(w, t1_ns)
+                    if decode_result:
+                        decode_result["session_id"] = session_id
+                        decode_result["window_start"] = t0_ns
+                        decode_result["window_end"] = t1_ns
+                        decode_rows.append(decode_result)
+                except Exception as e:
+                    typer.echo(f"Decoder processing error: {e}")
 
             # Automated event detection
             if sqi["line_noise_ratio"] > cfg.th_lnr:
@@ -436,7 +749,452 @@ def ingest(
     # Write SQIs
     df = pd.DataFrame.from_records(sqi_rows)
     df.to_parquet(out_dir / "sqi.parquet", index=False)
+    
+    # Write decoder outputs and compute performance metrics
+    if decoder and decode_rows:
+        decode_df = pd.DataFrame.from_records(decode_rows)
+        decode_df.to_parquet(out_dir / "decode.parquet", index=False)
+        
+        # Compute performance metrics
+        metrics = compute_performance_metrics(decode_rows)
+        metrics["session_id"] = session_id
+        metrics["decoder"] = decoder.config.name
+        
+        # Save metrics
+        with open(out_dir / "decode_metrics.json", "w") as f:
+            json.dump(metrics, f, indent=2)
+        
+        typer.echo(f"Decoder performance: {metrics['accuracy']:.1%} accuracy, "
+                  f"{metrics['latency_ms']:.1f}ms latency, "
+                  f"{metrics['throughput_hz']:.1f}Hz throughput")
+        
+        # Stop decoder
+        decoder.stop()
+    
     typer.echo(f"Wrote {out_dir / 'sqi.parquet'} and {events_path}")
+    if decoder and decode_rows:
+        typer.echo(f"Wrote {out_dir / 'decode.parquet'} and {out_dir / 'decode_metrics.json'}")
+
+
+# -------------------------
+# Export Helpers
+# -------------------------
+
+def export_to_npz(session_dir: Path, output_path: Path | None = None):
+    """Export session data to NumPy .npz format."""
+    if output_path is None:
+        output_path = session_dir / "export.npz"
+    
+    # Load SQI data
+    sqi_path = session_dir / "sqi.parquet"
+    if not sqi_path.exists():
+        raise ValueError(f"No SQI data found in {session_dir}")
+    
+    df = pd.read_parquet(sqi_path)
+    
+    # Organize data by channel
+    channels = df['ch'].unique()
+    data = {}
+    
+    for ch in channels:
+        ch_data = df[df['ch'] == ch]
+        data[f'{ch}_rms'] = ch_data['rms'].values
+        data[f'{ch}_composite_sqi'] = ch_data['composite_sqi'].values
+        data[f'{ch}_line_noise'] = ch_data['line_noise_ratio'].values
+        data[f'{ch}_timestamps'] = ch_data['t_start'].values
+    
+    # Add metadata
+    data['channels'] = channels
+    data['sampling_rate'] = 250  # Default, could be extracted from provenance
+    
+    np.savez_compressed(output_path, **data)
+    return output_path
+
+def export_to_mat(session_dir: Path, output_path: Path | None = None):
+    """Export session data to MATLAB .mat format."""
+    try:
+        import scipy.io as sio
+    except ImportError:
+        raise ImportError("scipy not installed. Install with: pip install scipy")
+    
+    if output_path is None:
+        output_path = session_dir / "export.mat"
+    
+    # Load SQI data
+    sqi_path = session_dir / "sqi.parquet"
+    if not sqi_path.exists():
+        raise ValueError(f"No SQI data found in {session_dir}")
+    
+    df = pd.read_parquet(sqi_path)
+    
+    # Organize data for MATLAB
+    channels = df['ch'].unique()
+    mat_data = {}
+    
+    for ch in channels:
+        ch_data = df[df['ch'] == ch]
+        mat_data[f'{ch}_rms'] = ch_data['rms'].values
+        mat_data[f'{ch}_composite_sqi'] = ch_data['composite_sqi'].values
+        mat_data[f'{ch}_line_noise'] = ch_data['line_noise_ratio'].values
+        mat_data[f'{ch}_timestamps'] = ch_data['t_start'].values
+    
+    # Add metadata
+    mat_data['channels'] = channels
+    mat_data['sampling_rate'] = 250
+    
+    sio.savemat(output_path, mat_data)
+    return output_path
+
+def run_benchmark(source: str, decoder: str | None = None, **kwargs) -> dict:
+    """Run comprehensive benchmark of SQI and decoder performance."""
+    import tempfile
+    from pathlib import Path
+    
+    # Create temporary output directory
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        
+        # Run ingest with all features
+        typer.echo("Running benchmark...")
+        
+        # Load data to get basic info
+        x, channels = load_data_source(source, **kwargs)
+        n_ch, n_samples = x.shape
+        duration = n_samples / kwargs.get('fs', 250)
+        
+        # Run QC analysis with proper parameter names
+        ingest_params = {
+            'source': source,
+            'out_dir': temp_path,
+            'decode': decoder,
+            'fs': kwargs.get('fs', 250),
+            'win': kwargs.get('win', '1s'),
+            'hop': kwargs.get('hop', '250ms'),
+            'line_freq': 60,
+            'th_lnr': 0.6,
+            'th_burst_z': 6.0,
+            'th_flat_std': 1e-3,
+            'th_clip_pct': 0.05
+        }
+        ingest(**ingest_params)
+        
+        # Load results
+        sqi_df = pd.read_parquet(temp_path / "sqi.parquet")
+        
+        # Compute SQI statistics
+        sqi_stats = {
+            'mean_composite_sqi': float(sqi_df['composite_sqi'].mean()),
+            'std_composite_sqi': float(sqi_df['composite_sqi'].std()),
+            'min_composite_sqi': float(sqi_df['composite_sqi'].min()),
+            'max_composite_sqi': float(sqi_df['composite_sqi'].max()),
+            'channels_with_issues': int((sqi_df.groupby('ch')['composite_sqi'].mean() < 70).sum()),
+            'total_windows': len(sqi_df),
+            'data_duration_s': duration,
+            'channels': len(channels),
+            'sample_rate': kwargs.get('fs', 250)
+        }
+        
+        # Load decoder metrics if available
+        decode_metrics = {}
+        if decoder and (temp_path / "decode_metrics.json").exists():
+            with open(temp_path / "decode_metrics.json") as f:
+                decode_metrics = json.load(f)
+        
+        # Combine results
+        benchmark_results = {
+            'timestamp': utc_now_iso(),
+            'source': source,
+            'decoder': decoder,
+            'sqi_performance': sqi_stats,
+            'decoder_performance': decode_metrics,
+            'processing_time_s': 0.0  # Could be measured
+        }
+        
+        return benchmark_results
+
+# -------------------------
+# Export Commands
+# -------------------------
+
+@app.command()
+def to_npz(
+    session: Path = typer.Argument(..., exists=True, help="Session directory"),
+    output: Path = typer.Option(None, help="Output .npz file path"),
+):
+    """Export session data to NumPy .npz format for analysis."""
+    try:
+        output_path = export_to_npz(session, output)
+        typer.echo(f"Exported to: {output_path}")
+        typer.echo("Contains: RMS, composite SQI, line noise, timestamps per channel")
+    except Exception as e:
+        typer.echo(f"Export failed: {e}")
+        raise typer.Exit(code=1)
+
+@app.command()
+def to_mat(
+    session: Path = typer.Argument(..., exists=True, help="Session directory"),
+    output: Path = typer.Option(None, help="Output .mat file path"),
+):
+    """Export session data to MATLAB .mat format for analysis."""
+    try:
+        output_path = export_to_mat(session, output)
+        typer.echo(f"Exported to: {output_path}")
+        typer.echo("Contains: RMS, composite SQI, line noise, timestamps per channel")
+    except Exception as e:
+        typer.echo(f"Export failed: {e}")
+        raise typer.Exit(code=1)
+
+@app.command()
+def benchmark(
+    source: str = typer.Option(..., help="Data source for benchmarking"),
+    decoder: str | None = typer.Option(None, help="Decoder to test"),
+    out_file: Path = typer.Option(Path("benchmark_results.json"), help="Output file for results"),
+    fs: int = typer.Option(250, help="Sampling rate (Hz)"),
+    win: str = typer.Option("1s", help="Window size"),
+    hop: str = typer.Option("250ms", help="Hop size"),
+):
+    """Run comprehensive benchmark of SQI and decoder performance."""
+    try:
+        # Parse durations
+        def parse_duration(s: str) -> float:
+            s = s.strip().lower()
+            if s.endswith("ms"):
+                return float(s[:-2]) / 1000.0
+            if s.endswith("s"):
+                return float(s[:-1])
+            return float(s)
+        
+        results = run_benchmark(
+            source=source,
+            decoder=decoder,
+            fs=fs,
+            win=win,
+            hop=hop
+        )
+        
+        # Save results
+        with open(out_file, 'w') as f:
+            json.dump(results, f, indent=2)
+        
+        # Display summary
+        typer.echo(f"Benchmark completed: {out_file}")
+        typer.echo(f"Data: {results['sqi_performance']['channels']} channels, "
+                  f"{results['sqi_performance']['data_duration_s']:.1f}s")
+        typer.echo(f"SQI: {results['sqi_performance']['mean_composite_sqi']:.1f} ± "
+                  f"{results['sqi_performance']['std_composite_sqi']:.1f}")
+        if decoder and results['decoder_performance']:
+            typer.echo(f"Decoder: {results['decoder_performance'].get('accuracy', 0):.1%} accuracy, "
+                      f"{results['decoder_performance'].get('latency_ms', 0):.1f}ms latency")
+        
+    except Exception as e:
+        typer.echo(f"Benchmark failed: {e}")
+        raise typer.Exit(code=1)
+
+@app.command()
+def dry_run(
+    source: str = typer.Option(..., help="Data source to test"),
+    duration: float = typer.Option(5.0, help="Test duration (seconds)"),
+):
+    """Test data source connectivity and basic processing without saving results."""
+    try:
+        typer.echo(f"Testing data source: {source}")
+        typer.echo(f"Duration: {duration}s")
+        
+        # Test data loading
+        if source.startswith("lsl:"):
+            x, channels = load_data_source(source, duration=duration)
+        else:
+            x, channels = load_data_source(source)
+        
+        typer.echo(f"✅ Data loaded: {len(channels)} channels, {x.shape[1]} samples")
+        
+        # Test basic SQI computation
+        if x.shape[1] > 100:  # Enough samples for testing
+            test_segment = x[:, :100]
+            rms_val = rms(test_segment[0])
+            composite = composite_sqi({
+                'rms': rms_val,
+                'dc_offset': dc_offset(test_segment[0]),
+                'line_noise_ratio': line_noise_ratio(test_segment[0], 250, 60),
+                'hf_lf_ratio': hf_lf_ratio(test_segment[0], 250, (1.0, 30.0), (30.0, 90.0)),
+                'clip_pct': clip_pct(test_segment[0]),
+                'flatline_ratio': flatline_ratio(test_segment[0], 1e-3),
+                'drop_ct': dropout_count(test_segment[0])
+            })
+            typer.echo(f"✅ SQI test: RMS={rms_val:.4f}, Composite={composite:.1f}")
+        
+        typer.echo("✅ Dry run completed successfully!")
+        typer.echo(f"Ready to run: physioq ingest --source '{source}' --out-dir runs/my_session")
+        
+    except Exception as e:
+        typer.echo(f"❌ Dry run failed: {e}")
+        raise typer.Exit(code=1)
+
+# -------------------------
+# Sources command
+# -------------------------
+@app.command()
+def sources(
+    list_lsl: bool = typer.Option(False, help="List available LSL streams"),
+    list_bci: bool = typer.Option(False, help="List available BCI Competition datasets"),
+):
+    """List available data sources and streams."""
+    from rich.console import Console
+    from rich.table import Table
+    
+    console = Console()
+    
+    if list_lsl:
+        try:
+            import pylsl
+            streams = pylsl.resolve_streams()
+            
+            if not streams:
+                console.print("[yellow]No LSL streams found. Make sure your device is connected and streaming.[/yellow]")
+                return
+            
+            table = Table(title="Available LSL Streams")
+            table.add_column("Name", style="cyan")
+            table.add_column("Type", style="magenta")
+            table.add_column("Channels", style="green")
+            table.add_column("Sample Rate", style="yellow")
+            table.add_column("Source ID", style="blue")
+            
+            for stream in streams:
+                table.add_row(
+                    stream.name(),
+                    stream.type(),
+                    str(stream.channel_count()),
+                    f"{stream.nominal_srate():.0f} Hz" if stream.nominal_srate() > 0 else "Variable",
+                    stream.source_id()
+                )
+            
+            console.print(table)
+            console.print(f"\n[green]Use: physioq ingest --source lsl:STREAM_NAME[/green]")
+            
+        except ImportError:
+            console.print("[red]pylsl not installed. Install with: pip install pylsl[/red]")
+        except Exception as e:
+            console.print(f"[red]Error listing LSL streams: {e}[/red]")
+    
+    elif list_bci:
+        table = Table(title="Available BCI Competition Datasets")
+        table.add_column("Dataset", style="cyan")
+        table.add_column("Description", style="magenta")
+        table.add_column("Channels", style="green")
+        table.add_column("Classes", style="yellow")
+        table.add_column("Usage", style="blue")
+        
+        datasets = [
+            ("bci_iv_2a", "BCI Competition IV Dataset 2a", "22 EEG", "4 classes", "bci_competition:bci_iv_2a"),
+            ("bci_iv_2b", "BCI Competition IV Dataset 2b", "3 EEG", "2 classes", "bci_competition:bci_iv_2b"),
+            ("neural_latents", "Neural Latents Benchmark", "Variable", "Variable", "bci_competition:neural_latents"),
+        ]
+        
+        for dataset in datasets:
+            table.add_row(*dataset)
+        
+        console.print(table)
+        console.print(f"\n[green]Use: physioq ingest --source bci_competition:DATASET_NAME[/green]")
+    
+    else:
+        # Show general help
+        console.print("[bold]PhysioQC Data Sources[/bold]")
+        console.print("=" * 50)
+        
+        help_table = Table()
+        help_table.add_column("Source Type", style="cyan")
+        help_table.add_column("Format", style="magenta")
+        help_table.add_column("Example", style="green")
+        
+        help_table.add_row(
+            "File",
+            "file:path/to/data.npy",
+            "file:demo.npy"
+        )
+        help_table.add_row(
+            "LSL Stream",
+            "lsl:stream_name",
+            "lsl:OpenBCI"
+        )
+        help_table.add_row(
+            "Simulated",
+            "simulated:fs=250,secs=10,n_ch=4",
+            "simulated:fs=500,secs=5,n_ch=8"
+        )
+        help_table.add_row(
+            "BCI Competition",
+            "bci_competition:dataset_name",
+            "bci_competition:bci_iv_2a"
+        )
+        
+        console.print(help_table)
+        console.print(f"\n[green]Commands:[/green]")
+        console.print(f"  physioq sources --list-lsl    # List available LSL streams")
+        console.print(f"  physioq sources --list-bci    # List BCI Competition datasets")
+
+
+# -------------------------
+# Decode Status command
+# -------------------------
+@app.command()
+def decode_status(
+    session: Path = typer.Argument(..., exists=True, help="Session dir with decode.parquet"),
+):
+    """Show decoder performance metrics and recent predictions."""
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    
+    console = Console()
+    
+    # Load decoder metrics
+    metrics_path = session / "decode_metrics.json"
+    decode_path = session / "decode.parquet"
+    
+    if not metrics_path.exists():
+        console.print("[red]No decoder metrics found. Run ingest with --decode to generate metrics.[/red]")
+        return
+    
+    # Load metrics
+    with open(metrics_path) as f:
+        metrics = json.load(f)
+    
+    # Create metrics table
+    metrics_table = Table(title="Decoder Performance Metrics")
+    metrics_table.add_column("Metric", style="cyan")
+    metrics_table.add_column("Value", style="green")
+    
+    metrics_table.add_row("Decoder", metrics.get("decoder", "unknown"))
+    metrics_table.add_row("Accuracy", f"{metrics.get('accuracy', 0):.1%}")
+    metrics_table.add_row("Avg Confidence", f"{metrics.get('avg_confidence', 0):.3f}")
+    metrics_table.add_row("Latency", f"{metrics.get('latency_ms', 0):.1f} ms")
+    metrics_table.add_row("Throughput", f"{metrics.get('throughput_hz', 0):.1f} Hz")
+    metrics_table.add_row("Total Predictions", str(metrics.get("total_predictions", 0)))
+    
+    console.print(metrics_table)
+    
+    # Show recent predictions if available
+    if decode_path.exists():
+        try:
+            df = pd.read_parquet(decode_path)
+            if not df.empty:
+                recent_table = Table(title="Recent Predictions (Last 10)")
+                recent_table.add_column("Timestamp", style="cyan")
+                recent_table.add_column("Prediction", style="magenta")
+                recent_table.add_column("Confidence", style="yellow")
+                
+                for _, row in df.tail(10).iterrows():
+                    timestamp = datetime.fromtimestamp(row['timestamp'] / 1e9).strftime("%H:%M:%S.%f")[:-3]
+                    recent_table.add_row(
+                        timestamp,
+                        row.get('prediction', 'unknown'),
+                        f"{row.get('confidence', 0):.3f}"
+                    )
+                
+                console.print(recent_table)
+        except Exception as e:
+            console.print(f"[red]Error loading predictions: {e}[/red]")
 
 
 # -------------------------
@@ -444,7 +1202,7 @@ def ingest(
 # -------------------------
 @app.command()
 def status(
-    session: Path = typer.Option(..., exists=True, help="Session dir with sqi.parquet"),
+    session: Path = typer.Argument(..., exists=True, help="Session dir with sqi.parquet"),
     top_n: int = typer.Option(10, help="Number of worst channels to show"),
     refresh: float = typer.Option(2.0, help="Refresh interval in seconds"),
 ):
@@ -571,11 +1329,17 @@ def info():
     typer.echo("Tagline: Stream in → SQIs & auto‑events out")
     typer.echo()
     typer.echo("Available Commands:")
-    typer.echo("  simulate - Generate synthetic multichannel signal")
-    typer.echo("  ingest   - Compute SQIs + auto-events over sliding windows")
-    typer.echo("  status   - Show live status of worst channels")
-    typer.echo("  annotate - Append keypress annotations to events.jsonl")
-    typer.echo("  info     - Show this information")
+    typer.echo("  simulate      - Generate synthetic multichannel signal")
+    typer.echo("  ingest        - Compute SQIs + auto-events over sliding windows")
+    typer.echo("  sources       - List available data sources and streams")
+    typer.echo("  status        - Show live status of worst channels")
+    typer.echo("  decode-status - Show decoder performance metrics")
+    typer.echo("  to-npz        - Export session data to NumPy .npz format")
+    typer.echo("  to-mat        - Export session data to MATLAB .mat format")
+    typer.echo("  benchmark     - Run comprehensive SQI and decoder benchmarks")
+    typer.echo("  dry-run       - Test data source connectivity without saving")
+    typer.echo("  annotate      - Append keypress annotations to events.jsonl")
+    typer.echo("  info          - Show this information")
 
 
 # -------------------------
@@ -590,13 +1354,33 @@ def demo():
     typer.echo("\nStep 1: Creating demo signal...")
     simulate(Path("demo.npy"), fs=250, secs=10.0, n_ch=4, line_freq=60, seed=7)
     
-    # Step 2: Run QC
-    typer.echo("\nStep 2: Running QC analysis...")
-    ingest(Path("demo.npy"), Path("runs/demo1"), fs=250, win="1s", hop="250ms", line_freq=60, 
+    # Step 2: Run QC with file source
+    typer.echo("\nStep 2: Running QC analysis (file source)...")
+    ingest("file:demo.npy", Path("runs/demo1"), fs=250, win="1s", hop="250ms", line_freq=60, 
            th_lnr=0.6, th_burst_z=6.0, th_flat_std=1e-3, th_clip_pct=0.05)
     
-    # Step 3: Show results
-    typer.echo("\nStep 3: Results summary:")
+    # Step 2.5: Run QC with simulated source
+    typer.echo("\nStep 2.5: Running QC analysis (simulated source)...")
+    ingest("simulated:fs=250,secs=5,n_ch=8,line_freq=60", Path("runs/demo2"), fs=250, win="1s", hop="250ms", line_freq=60,
+           th_lnr=0.6, th_burst_z=6.0, th_flat_std=1e-3, th_clip_pct=0.05)
+    
+    # Step 2.6: Run with decoder (if example decoder exists)
+    if Path("example_decoder.py").exists():
+        typer.echo("\nStep 2.6: Running QC with decoder integration...")
+        ingest("file:demo.npy", Path("runs/demo1_decoded"), fs=250, win="1s", hop="250ms", line_freq=60,
+               th_lnr=0.6, th_burst_z=6.0, th_flat_std=1e-3, th_clip_pct=0.05,
+               decode="python:example_decoder")
+    
+    # Step 3: Export and benchmark
+    typer.echo("\nStep 3: Exporting data for analysis...")
+    to_npz(Path("runs/demo1"))
+    to_mat(Path("runs/demo1"))
+    
+    typer.echo("\nStep 3.5: Running benchmark...")
+    benchmark("simulated:fs=250,secs=3,n_ch=4", decoder="python:example_decoder" if Path("example_decoder.py").exists() else None)
+    
+    # Step 4: Show results
+    typer.echo("\nStep 4: Results summary:")
     if Path("runs/demo1").exists():
         for file in Path("runs/demo1").iterdir():
             typer.echo(f"  ✓ {file.name}")
