@@ -777,6 +777,182 @@ def ingest(
 
 
 # -------------------------
+# Phase 5: Wow Factor Features
+# -------------------------
+
+def create_web_dashboard():
+    """Create a lightweight web dashboard for live visualization."""
+    try:
+        from fastapi import FastAPI, WebSocket
+        from fastapi.responses import HTMLResponse
+        import asyncio
+        
+        app = FastAPI(title="PhysioQC Live Dashboard")
+        
+        # Store for live data
+        live_data = {"sqi": [], "predictions": []}
+        
+        @app.get("/")
+        async def dashboard():
+            return HTMLResponse("""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>PhysioQC Live Dashboard</title>
+                <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 20px; background: #1e1e1e; color: white; }
+                    .container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+                    .panel { background: #2d2d2d; padding: 20px; border-radius: 8px; }
+                    h1 { text-align: center; color: #4CAF50; }
+                    .metric { display: inline-block; margin: 10px; padding: 10px; background: #3d3d3d; border-radius: 4px; }
+                </style>
+            </head>
+            <body>
+                <h1>PhysioQC Live Dashboard</h1>
+                <div class="container">
+                    <div class="panel">
+                        <h2>Signal Quality Heatmap</h2>
+                        <div id="sqi-heatmap" style="height: 400px;"></div>
+                    </div>
+                    <div class="panel">
+                        <h2>Decoder Output</h2>
+                        <div id="decoder-plot" style="height: 400px;"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <h2>Live Metrics</h2>
+                    <div id="metrics"></div>
+                </div>
+                
+                <script>
+                    const ws = new WebSocket("ws://localhost:8000/ws");
+                    
+                    ws.onmessage = function(event) {
+                        const data = JSON.parse(event.data);
+                        updateDashboard(data);
+                    };
+                    
+                    function updateDashboard(data) {
+                        if (data.type === 'sqi') {
+                            updateSQIHeatmap(data.payload);
+                        } else if (data.type === 'decoder') {
+                            updateDecoderPlot(data.payload);
+                        }
+                    }
+                    
+                    function updateSQIHeatmap(sqi_data) {
+                        if (!sqi_data.length) return;
+                        const channels = sqi_data.map(d => d.channel);
+                        const scores = sqi_data.map(d => d.composite_sqi);
+                        
+                        const trace = {
+                            z: [scores],
+                            x: channels,
+                            type: 'heatmap',
+                            colorscale: [[0, 'red'], [0.5, 'yellow'], [1, 'green']],
+                            zmin: 0,
+                            zmax: 100
+                        };
+                        
+                        Plotly.newPlot('sqi-heatmap', [trace], {
+                            title: 'Channel Quality (0-100)',
+                            paper_bgcolor: '#2d2d2d',
+                            plot_bgcolor: '#2d2d2d',
+                            font: {color: 'white'}
+                        });
+                    }
+                    
+                    function updateDecoderPlot(decoder_data) {
+                        if (!decoder_data.length) return;
+                        const times = decoder_data.map((d, i) => i);
+                        const confidences = decoder_data.map(d => d.confidence);
+                        
+                        const trace = {
+                            x: times,
+                            y: confidences,
+                            mode: 'lines+markers',
+                            type: 'scatter',
+                            name: 'Confidence',
+                            line: {color: '#4CAF50'}
+                        };
+                        
+                        Plotly.newPlot('decoder-plot', [trace], {
+                            title: 'Decoder Confidence Over Time',
+                            paper_bgcolor: '#2d2d2d',
+                            plot_bgcolor: '#2d2d2d',
+                            font: {color: 'white'},
+                            yaxis: {range: [0, 1]}
+                        });
+                    }
+                </script>
+            </body>
+            </html>
+            """)
+        
+        @app.websocket("/ws")
+        async def websocket_endpoint(websocket: WebSocket):
+            await websocket.accept()
+            try:
+                while True:
+                    if live_data["sqi"]:
+                        await websocket.send_json({
+                            "type": "sqi",
+                            "payload": live_data["sqi"][-10:]
+                        })
+                    
+                    if live_data["predictions"]:
+                        await websocket.send_json({
+                            "type": "decoder", 
+                            "payload": live_data["predictions"][-20:]
+                        })
+                    
+                    await asyncio.sleep(2)
+            except:
+                pass
+        
+        return app, live_data
+        
+    except ImportError:
+        raise ImportError("FastAPI not installed. Install with: pip install fastapi uvicorn")
+
+def inject_fault(data: NDArray[np.float32], fault_type: str, **kwargs) -> NDArray[np.float32]:
+    """Inject specific types of faults into signal data for testing."""
+    corrupted = data.copy()
+    n_ch, n_samples = corrupted.shape
+    
+    if fault_type == "line_burst":
+        freq = kwargs.get("freq", 60)
+        channels = kwargs.get("channels", [0])
+        
+        for ch in channels:
+            if ch < n_ch:
+                t = np.arange(n_samples) / kwargs.get("fs", 250)
+                burst_start = int(0.3 * n_samples)
+                burst_end = int(0.7 * n_samples)
+                line_signal = 0.5 * np.sin(2 * np.pi * freq * t)
+                corrupted[ch, burst_start:burst_end] += line_signal[burst_start:burst_end]
+    
+    elif fault_type == "dropout":
+        channels = kwargs.get("channels", [0, 1])
+        dropout_len = kwargs.get("length", 100)
+        
+        for ch in channels:
+            if ch < n_ch:
+                start = np.random.randint(0, n_samples - dropout_len)
+                corrupted[ch, start:start + dropout_len] = 0
+    
+    elif fault_type == "clipping":
+        channels = kwargs.get("channels", [0])
+        clip_level = kwargs.get("level", 0.1)
+        
+        for ch in channels:
+            if ch < n_ch:
+                corrupted[ch] = np.clip(corrupted[ch], -clip_level, clip_level)
+    
+    return corrupted
+
+# -------------------------
 # Export Helpers
 # -------------------------
 
@@ -911,6 +1087,202 @@ def run_benchmark(source: str, decoder: str | None = None, **kwargs) -> dict:
         }
         
         return benchmark_results
+
+# -------------------------
+# Wow Factor Commands
+# -------------------------
+
+@app.command()
+def dashboard(
+    session: Path = typer.Option(None, exists=True, help="Session directory to monitor (optional)"),
+    port: int = typer.Option(8000, help="Port for web dashboard"),
+    host: str = typer.Option("localhost", help="Host for web dashboard"),
+):
+    """Launch live web dashboard for real-time SQI and decoder visualization."""
+    try:
+        import uvicorn
+        
+        app_instance, live_data = create_web_dashboard()
+        
+        # If session provided, load initial data
+        if session:
+            sqi_path = session / "sqi.parquet"
+            if sqi_path.exists():
+                df = pd.read_parquet(sqi_path)
+                latest_sqi = df.groupby('ch').tail(1)
+                live_data["sqi"] = [
+                    {
+                        "channel": row['ch'],
+                        "composite_sqi": row['composite_sqi'],
+                        "timestamp": row['t_end']
+                    }
+                    for _, row in latest_sqi.iterrows()
+                ]
+            
+            decode_path = session / "decode.parquet"
+            if decode_path.exists():
+                decode_df = pd.read_parquet(decode_path)
+                live_data["predictions"] = [
+                    {
+                        "timestamp": row['timestamp'],
+                        "prediction": row['prediction'],
+                        "confidence": row['confidence']
+                    }
+                    for _, row in decode_df.tail(20).iterrows()
+                ]
+        
+        typer.echo(f"Starting PhysioQC dashboard at http://{host}:{port}")
+        typer.echo("Press Ctrl+C to stop")
+        
+        uvicorn.run(app_instance, host=host, port=port, log_level="warning")
+        
+    except ImportError:
+        typer.echo("FastAPI/uvicorn not installed. Install with: pip install fastapi uvicorn")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        typer.echo(f"Dashboard failed: {e}")
+        raise typer.Exit(code=1)
+
+@app.command()
+def hotkeys(
+    session: Path = typer.Argument(..., exists=True, help="Session directory"),
+    keymap: str = typer.Option(
+        "a:artifact,n:noise,s:stim,m:movement,b:burst,f:flatline,space:bookmark",
+        help="Key mappings (key:label,key:label,...)"
+    ),
+):
+    """Interactive hotkey annotation mode with live feedback."""
+    from rich.console import Console
+    from rich.table import Table
+    
+    if readchar is None:
+        typer.echo("readchar not installed. Install with: pip install readchar")
+        raise typer.Exit(code=1)
+    
+    # Parse keymap
+    km = {}
+    for pair in keymap.split(","):
+        key, label = pair.split(":", 1)
+        km[key.strip()] = label.strip()
+    
+    console = Console()
+    events_path = session / "events.jsonl"
+    
+    # Create help table
+    help_table = Table(title="PhysioQC Hotkey Annotations")
+    help_table.add_column("Key", style="cyan")
+    help_table.add_column("Action", style="green")
+    
+    for key, label in km.items():
+        help_table.add_row(key, label)
+    help_table.add_row("q", "Quit annotation mode")
+    
+    console.print(help_table)
+    console.print("\n[green]Annotation mode active. Press keys to annotate events.[/green]")
+    
+    annotation_count = 0
+    
+    while True:
+        try:
+            key = readchar.readkey()
+            
+            if key == 'q':
+                break
+            
+            label = km.get(key)
+            if label:
+                event = {
+                    "ts": utc_now_iso(),
+                    "type": "hotkey",
+                    "label": label,
+                    "key": key,
+                    "user": os.getenv("USER", "user"),
+                    "annotation_id": str(uuid.uuid4())
+                }
+                
+                append_event(events_path, event)
+                annotation_count += 1
+                
+                console.print(f"[yellow]+ {label}[/yellow] (#{annotation_count})")
+            
+        except KeyboardInterrupt:
+            break
+    
+    console.print(f"\n[green]Annotation complete. Added {annotation_count} annotations.[/green]")
+
+@app.command()
+def inject_noise(
+    source: str = typer.Option(..., help="Data source"),
+    out_dir: Path = typer.Option(Path("runs/fault_test"), help="Output directory"),
+    pattern: str = typer.Option("line_burst", help="Fault pattern: line_burst, dropout, clipping"),
+    freq: int = typer.Option(60, help="Frequency for line burst (Hz)"),
+    channels: str = typer.Option("0,1", help="Channels to affect (comma-separated)"),
+    fs: int = typer.Option(250, help="Sampling rate (Hz)"),
+):
+    """Inject specific noise patterns for testing SQI robustness."""
+    try:
+        # Load clean data
+        x_clean, channel_names = load_data_source(source)
+        
+        # Parse affected channels
+        affected_channels = [int(ch.strip()) for ch in channels.split(",")]
+        
+        # Inject fault
+        x_corrupted = inject_fault(
+            x_clean,
+            pattern,
+            freq=freq,
+            channels=affected_channels,
+            fs=fs
+        )
+        
+        # Save corrupted data
+        ensure_out_dir(out_dir)
+        corrupted_path = out_dir / f"corrupted_{pattern}.npy"
+        np.save(corrupted_path, x_corrupted)
+        
+        # Run SQI analysis on both clean and corrupted
+        typer.echo(f"Injected {pattern} into channels {affected_channels}")
+        
+        # Analyze clean data
+        clean_dir = out_dir / "clean"
+        ensure_out_dir(clean_dir)
+        clean_path = clean_dir / "clean.npy"
+        np.save(clean_path, x_clean)
+        
+        typer.echo("Analyzing clean data...")
+        ingest(f"file:{clean_path}", clean_dir, fs=fs, win="1s", hop="250ms", line_freq=60, 
+               th_lnr=0.6, th_burst_z=6.0, th_flat_std=1e-3, th_clip_pct=0.05)
+        
+        typer.echo("Analyzing corrupted data...")
+        ingest(f"file:{corrupted_path}", out_dir, fs=fs, win="1s", hop="250ms", line_freq=60,
+               th_lnr=0.6, th_burst_z=6.0, th_flat_std=1e-3, th_clip_pct=0.05)
+        
+        # Compare results
+        clean_sqi = pd.read_parquet(clean_dir / "sqi.parquet")
+        corrupt_sqi = pd.read_parquet(out_dir / "sqi.parquet")
+        
+        # Show impact
+        typer.echo(f"\nFault injection results:")
+        typer.echo(f"Clean SQI:     {clean_sqi['composite_sqi'].mean():.1f} ± {clean_sqi['composite_sqi'].std():.1f}")
+        typer.echo(f"Corrupted SQI: {corrupt_sqi['composite_sqi'].mean():.1f} ± {corrupt_sqi['composite_sqi'].std():.1f}")
+        
+        # Show per-channel impact
+        clean_by_ch = clean_sqi.groupby('ch')['composite_sqi'].mean()
+        corrupt_by_ch = corrupt_sqi.groupby('ch')['composite_sqi'].mean()
+        
+        typer.echo(f"\nPer-channel impact:")
+        for ch in channel_names:
+            if ch in clean_by_ch.index and ch in corrupt_by_ch.index:
+                impact = clean_by_ch[ch] - corrupt_by_ch[ch]
+                marker = "🔴" if ch in [f"ch{i}" for i in affected_channels] else "⚪"
+                typer.echo(f"{marker} {ch}: {impact:+.1f} SQI points")
+        
+        typer.echo(f"\nFiles saved: {corrupted_path}, {out_dir}/sqi.parquet")
+        
+    except Exception as e:
+        typer.echo(f"Fault injection failed: {e}")
+        raise typer.Exit(code=1)
 
 # -------------------------
 # Export Commands
@@ -1334,6 +1706,9 @@ def info():
     typer.echo("  sources       - List available data sources and streams")
     typer.echo("  status        - Show live status of worst channels")
     typer.echo("  decode-status - Show decoder performance metrics")
+    typer.echo("  dashboard     - Launch live web dashboard (wow factor!)")
+    typer.echo("  hotkeys       - Interactive hotkey annotation mode")
+    typer.echo("  inject-noise  - Inject faults for robustness testing")
     typer.echo("  to-npz        - Export session data to NumPy .npz format")
     typer.echo("  to-mat        - Export session data to MATLAB .mat format")
     typer.echo("  benchmark     - Run comprehensive SQI and decoder benchmarks")
