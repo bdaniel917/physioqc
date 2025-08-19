@@ -328,11 +328,6 @@ If you use PhysioQC in your research, please cite:
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## Acknowledgments
-
-- **BCI Community**: For feedback and testing
-- **Open Source Contributors**: For the amazing tools that make this possible
-- **Research Institutions**: For validation and use cases
 
 ---
 
