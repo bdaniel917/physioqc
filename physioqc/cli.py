@@ -777,7 +777,7 @@ def ingest(
 
 
 # -------------------------
-# Phase 5: Wow Factor Features
+# Phase 5: Advanced Visualization & Testing
 # -------------------------
 
 def create_web_dashboard():
@@ -1089,7 +1089,7 @@ def run_benchmark(source: str, decoder: str | None = None, **kwargs) -> dict:
         return benchmark_results
 
 # -------------------------
-# Wow Factor Commands
+# Advanced Visualization Commands
 # -------------------------
 
 @app.command()
@@ -1098,7 +1098,7 @@ def dashboard(
     port: int = typer.Option(8000, help="Port for web dashboard"),
     host: str = typer.Option("localhost", help="Host for web dashboard"),
 ):
-    """Launch live web dashboard for real-time SQI and decoder visualization."""
+    """Launch live web dashboard for real-time signal quality and decoder monitoring."""
     try:
         import uvicorn
         
@@ -1131,7 +1131,7 @@ def dashboard(
                     for _, row in decode_df.tail(20).iterrows()
                 ]
         
-        typer.echo(f"Starting PhysioQC dashboard at http://{host}:{port}")
+        typer.echo(f"Starting PhysioQC monitoring dashboard at http://{host}:{port}")
         typer.echo("Press Ctrl+C to stop")
         
         uvicorn.run(app_instance, host=host, port=port, log_level="warning")
@@ -1219,7 +1219,7 @@ def inject_noise(
     channels: str = typer.Option("0,1", help="Channels to affect (comma-separated)"),
     fs: int = typer.Option(250, help="Sampling rate (Hz)"),
 ):
-    """Inject specific noise patterns for testing SQI robustness."""
+    """Inject specific noise patterns for signal quality assessment validation."""
     try:
         # Load clean data
         x_clean, channel_names = load_data_source(source)
@@ -1242,7 +1242,7 @@ def inject_noise(
         np.save(corrupted_path, x_corrupted)
         
         # Run SQI analysis on both clean and corrupted
-        typer.echo(f"Injected {pattern} into channels {affected_channels}")
+        typer.echo(f"Applied {pattern} pattern to channels {affected_channels}")
         
         # Analyze clean data
         clean_dir = out_dir / "clean"
@@ -1263,7 +1263,7 @@ def inject_noise(
         corrupt_sqi = pd.read_parquet(out_dir / "sqi.parquet")
         
         # Show impact
-        typer.echo(f"\nFault injection results:")
+        typer.echo(f"\nSignal validation results:")
         typer.echo(f"Clean SQI:     {clean_sqi['composite_sqi'].mean():.1f} ± {clean_sqi['composite_sqi'].std():.1f}")
         typer.echo(f"Corrupted SQI: {corrupt_sqi['composite_sqi'].mean():.1f} ± {corrupt_sqi['composite_sqi'].std():.1f}")
         
@@ -1271,17 +1271,17 @@ def inject_noise(
         clean_by_ch = clean_sqi.groupby('ch')['composite_sqi'].mean()
         corrupt_by_ch = corrupt_sqi.groupby('ch')['composite_sqi'].mean()
         
-        typer.echo(f"\nPer-channel impact:")
+        typer.echo(f"\nPer-channel quality impact:")
         for ch in channel_names:
             if ch in clean_by_ch.index and ch in corrupt_by_ch.index:
                 impact = clean_by_ch[ch] - corrupt_by_ch[ch]
                 marker = "🔴" if ch in [f"ch{i}" for i in affected_channels] else "⚪"
-                typer.echo(f"{marker} {ch}: {impact:+.1f} SQI points")
+                typer.echo(f"{marker} {ch}: {impact:+.1f} quality points")
         
         typer.echo(f"\nFiles saved: {corrupted_path}, {out_dir}/sqi.parquet")
         
     except Exception as e:
-        typer.echo(f"Fault injection failed: {e}")
+        typer.echo(f"Signal validation failed: {e}")
         raise typer.Exit(code=1)
 
 # -------------------------
@@ -1706,9 +1706,9 @@ def info():
     typer.echo("  sources       - List available data sources and streams")
     typer.echo("  status        - Show live status of worst channels")
     typer.echo("  decode-status - Show decoder performance metrics")
-    typer.echo("  dashboard     - Launch live web dashboard (wow factor!)")
+    typer.echo("  dashboard     - Launch live web dashboard for real-time monitoring")
     typer.echo("  hotkeys       - Interactive hotkey annotation mode")
-    typer.echo("  inject-noise  - Inject faults for robustness testing")
+    typer.echo("  inject-noise  - Apply noise patterns for quality validation")
     typer.echo("  to-npz        - Export session data to NumPy .npz format")
     typer.echo("  to-mat        - Export session data to MATLAB .mat format")
     typer.echo("  benchmark     - Run comprehensive SQI and decoder benchmarks")
