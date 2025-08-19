@@ -68,7 +68,7 @@ def test_ingest():
         if os.path.exists(filepath):
             print(f"  ✓ {file}")
         else:
-            print(f"  ✗ {file} (missing)")
+            print(f"  X {file} (missing)")
             all_exist = False
     
     # Clean up
@@ -100,18 +100,18 @@ def main():
                 print(f"✓ {test_name} PASSED")
                 passed += 1
             else:
-                print(f"✗ {test_name} FAILED")
+                print(f"X {test_name} FAILED")
         except Exception as e:
-            print(f"✗ {test_name} FAILED with error: {e}")
+            print(f"X {test_name} FAILED with error: {e}")
     
     print("\n" + "=" * 50)
     print(f"Tests passed: {passed}/{total}")
     
     if passed == total:
-        print("🎉 All tests passed! PhysioQC is working correctly.")
+        print("All tests passed! PhysioQC is working correctly.")
         return 0
     else:
-        print("❌ Some tests failed. Please check the implementation.")
+        print("X Some tests failed. Please check the implementation.")
         return 1
 
 if __name__ == "__main__":

@@ -8,11 +8,11 @@
 
 > Stream in → SQIs & auto‑events out
 
-## 🎯 Overview
+## Overview
 
 PhysioQC is a comprehensive tool designed for researchers, clinicians, and engineers working with neural data. It provides real-time signal quality assessment, automated event detection, decoder integration, and professional visualization capabilities.
 
-### ✨ Key Features
+### Key Features
 
 - **Real-time SQI computation** with composite quality scoring (0-100)
 - **Multi-source data support** (files, LSL streams, simulated data, BCI datasets)
@@ -23,7 +23,7 @@ PhysioQC is a comprehensive tool designed for researchers, clinicians, and engin
 - **Export capabilities** for MATLAB and Python analysis
 - **Professional CLI interface** with comprehensive help
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Installation
 
@@ -47,7 +47,7 @@ physioq status runs/demo
 physioq dashboard --session runs/demo
 ```
 
-## 📊 Core Capabilities
+## Core Capabilities
 
 ### Signal Quality Assessment
 
@@ -135,7 +135,7 @@ physioq benchmark --source "simulated:fs=250,secs=10,n_ch=8" \
                   --out-file benchmark_results.json
 ```
 
-## 🛠️ Installation
+## Installation
 
 ### Requirements
 
@@ -174,7 +174,7 @@ pip install readchar
 pip install rich
 ```
 
-## 📖 Documentation
+## Documentation
 
 ### Command Reference
 
@@ -222,7 +222,7 @@ runs/session_name/
 └── export.mat          # MATLAB export
 ```
 
-## 🎯 Use Cases
+## Use Cases
 
 ### Research Applications
 
@@ -245,7 +245,7 @@ runs/session_name/
 - **System Integration**: Quality monitoring in production systems
 - **Development Workflows**: Continuous testing and validation
 
-## 🔧 Development
+## Development
 
 ### Project Structure
 
@@ -286,7 +286,7 @@ pytest --cov=physioqc
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## 📊 Performance
+## Performance
 
 ### Benchmarks
 
@@ -302,7 +302,7 @@ pytest --cov=physioqc
 - **Storage**: SSD recommended for high-throughput applications
 - **Network**: Required for LSL stream processing
 
-## 🤝 Community
+## Community
 
 ### Getting Help
 
@@ -324,11 +324,11 @@ If you use PhysioQC in your research, please cite:
 }
 ```
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - **BCI Community**: For feedback and testing
 - **Open Source Contributors**: For the amazing tools that make this possible
@@ -338,4 +338,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **PhysioQC** - Making physiological signal quality assessment accessible, reliable, and professional.
 
-*Built with ❤️ for the neuroscience and BCI communities.*
+*Built for the neuroscience and BCI communities.*

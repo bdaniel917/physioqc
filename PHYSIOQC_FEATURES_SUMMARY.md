@@ -1,13 +1,13 @@
 # PhysioQC - Complete Feature Summary
 
-## 🎯 **Project Overview**
+## **Project Overview**
 **PhysioQC** is a professional-grade, headless CLI tool for real-time Signal Quality Assessment (SQI) and auto-event logging on physiological signals. Built for researchers, clinicians, and engineers working with neural data.
 
 **Tagline**: Stream in → SQIs & auto‑events out
 
 ---
 
-## 🏗️ **Phase 1: Signal Quality First (SQI Core)**
+## **Phase 1: Signal Quality First (SQI Core)**
 
 ### **Composite SQI Score (0-100)**
 - **Weighted combination** of all quality metrics
@@ -32,7 +32,7 @@
 
 ---
 
-## 🧠 **Phase 2: Neural Data In → Decode Out**
+## **Phase 2: Neural Data In → Decode Out**
 
 ### **External Decoder Integration**
 - **Python modules**: Direct import and execution
@@ -54,7 +54,7 @@
 
 ---
 
-## 🌐 **Phase 3: Multi-Dataset Ready**
+## **Phase 3: Multi-Dataset Ready**
 
 ### **Data Source Support**
 - **File-based**: .npy, .csv with automatic format detection
@@ -76,7 +76,7 @@
 
 ---
 
-## 🏗️ **Phase 4: Engineering Excellence**
+## **Phase 4: Engineering Excellence**
 
 ### **Export Capabilities**
 - **NumPy format**: .npz files for Python analysis
@@ -98,7 +98,7 @@
 
 ---
 
-## 🚀 **Phase 5: Advanced Visualization & Testing**
+## **Phase 5: Advanced Visualization & Testing**
 
 ### **Live Web Dashboard**
 - **FastAPI backend**: Modern web framework
@@ -126,7 +126,7 @@
 
 ---
 
-## 🛠️ **Technical Architecture**
+## **Technical Architecture**
 
 ### **Core Dependencies**
 - **Typer**: Modern CLI framework
@@ -158,7 +158,7 @@ runs/session_name/
 
 ---
 
-## 🎯 **Use Cases**
+## **Use Cases**
 
 ### **Research Applications**
 - **BCI Research**: Real-time quality monitoring
@@ -180,7 +180,7 @@ runs/session_name/
 
 ---
 
-## 🚀 **Getting Started**
+## **Getting Started**
 
 ### **Quick Start**
 ```bash
@@ -215,7 +215,7 @@ physioq to-mat runs/my_session
 
 ---
 
-## 📊 **Performance Characteristics**
+## **Performance Characteristics**
 
 ### **Processing Speed**
 - **Real-time capable**: Sub-second processing
@@ -237,7 +237,7 @@ physioq to-mat runs/my_session
 
 ---
 
-## 🔮 **Future Roadmap**
+## **Future Roadmap**
 
 ### **Planned Features**
 - **Machine Learning**: Automated artifact detection
@@ -253,7 +253,7 @@ physioq to-mat runs/my_session
 
 ---
 
-## 📈 **Impact & Benefits**
+## **Impact & Benefits**
 
 ### **Research Efficiency**
 - **Time savings**: Automated quality assessment

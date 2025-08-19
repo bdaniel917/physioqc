@@ -1378,7 +1378,7 @@ def dry_run(
         else:
             x, channels = load_data_source(source)
         
-        typer.echo(f"✅ Data loaded: {len(channels)} channels, {x.shape[1]} samples")
+        typer.echo(f"Data loaded: {len(channels)} channels, {x.shape[1]} samples")
         
         # Test basic SQI computation
         if x.shape[1] > 100:  # Enough samples for testing
@@ -1393,13 +1393,13 @@ def dry_run(
                 'flatline_ratio': flatline_ratio(test_segment[0], 1e-3),
                 'drop_ct': dropout_count(test_segment[0])
             })
-            typer.echo(f"✅ SQI test: RMS={rms_val:.4f}, Composite={composite:.1f}")
+            typer.echo(f"SQI test: RMS={rms_val:.4f}, Composite={composite:.1f}")
         
-        typer.echo("✅ Dry run completed successfully!")
+        typer.echo("Dry run completed successfully!")
         typer.echo(f"Ready to run: physioq ingest --source '{source}' --out-dir runs/my_session")
         
     except Exception as e:
-        typer.echo(f"❌ Dry run failed: {e}")
+        typer.echo(f"Dry run failed: {e}")
         raise typer.Exit(code=1)
 
 # -------------------------
