@@ -302,27 +302,6 @@ pytest --cov=physioqc
 - **Storage**: SSD recommended for high-throughput applications
 - **Network**: Required for LSL stream processing
 
-## Community
-
-### Getting Help
-
-- **Documentation**: [Full documentation](https://physioqc.readthedocs.io)
-- **Issues**: [GitHub Issues](https://github.com/yourusername/physioqc/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/physioqc/discussions)
-- **Email**: team@physioqc.dev
-
-### Citing PhysioQC
-
-If you use PhysioQC in your research, please cite:
-
-```bibtex
-@software{physioqc2024,
-  title={PhysioQC: Professional Signal Quality Assessment for Physiological Data},
-  author={PhysioQC Team},
-  year={2024},
-  url={https://github.com/yourusername/physioqc}
-}
-```
 
 ## License
 
