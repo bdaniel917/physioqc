@@ -1748,11 +1748,17 @@ def demo():
     
     # Step 3: Export and benchmark
     typer.echo("\nStep 3: Exporting data for analysis...")
-    to_npz(Path("runs/demo1"))
-    to_mat(Path("runs/demo1"))
+    try:
+        to_npz(Path("runs/demo1"))
+        to_mat(Path("runs/demo1"))
+    except Exception as e:
+        typer.echo(f"Export failed: {e}")
     
     typer.echo("\nStep 3.5: Running benchmark...")
-    benchmark("simulated:fs=250,secs=3,n_ch=4", decoder="python:example_decoder" if Path("example_decoder.py").exists() else None)
+    try:
+        benchmark("simulated:fs=250,secs=3,n_ch=4", decoder="python:example_decoder" if Path("example_decoder.py").exists() else None)
+    except Exception as e:
+        typer.echo(f"Benchmark failed: {e}")
     
     # Step 4: Show results
     typer.echo("\nStep 4: Results summary:")

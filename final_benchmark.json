@@ -1,0 +1,18 @@
+{
+  "timestamp": "2025-08-19T22:18:22.961+00:00",
+  "source": "simulated:fs=250,secs=3,n_ch=6",
+  "decoder": null,
+  "sqi_performance": {
+    "mean_composite_sqi": 61.407407407407405,
+    "std_composite_sqi": 14.928052001110814,
+    "min_composite_sqi": 49.6,
+    "max_composite_sqi": 85.7,
+    "channels_with_issues": 6,
+    "total_windows": 54,
+    "data_duration_s": 3.0,
+    "channels": 6,
+    "sample_rate": 250
+  },
+  "decoder_performance": {},
+  "processing_time_s": 0.0
+}
