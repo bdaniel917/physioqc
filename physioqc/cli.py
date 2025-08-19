@@ -157,6 +157,40 @@ def sliding_windows(n_samples: int, win: int, hop: int) -> Iterable[Tuple[int, i
 # SQIs
 # -------------------------
 
+def composite_sqi(sqi_dict: dict) -> float:
+    """Compute composite SQI score (0-100, where 100 is perfect quality)."""
+    # Normalize individual SQIs to 0-1 scale
+    rms_score = min(1.0, max(0.0, 1.0 - sqi_dict["rms"] / 0.1))  # Lower RMS is better
+    dc_score = min(1.0, max(0.0, 1.0 - abs(sqi_dict["dc_offset"]) / 0.05))  # Lower DC offset is better
+    lnr_score = min(1.0, max(0.0, 1.0 - sqi_dict["line_noise_ratio"]))  # Lower line noise is better
+    hf_lf_score = min(1.0, max(0.0, sqi_dict["hf_lf_ratio"] / 2.0))  # Moderate HF/LF ratio is good
+    clip_score = min(1.0, max(0.0, 1.0 - sqi_dict["clip_pct"]))  # Lower clipping is better
+    flat_score = min(1.0, max(0.0, 1.0 - sqi_dict["flatline_ratio"]))  # Lower flatline is better
+    dropout_score = min(1.0, max(0.0, 1.0 - sqi_dict["drop_ct"] / 10.0))  # Lower dropout count is better
+    
+    # Weighted combination (adjust weights based on importance)
+    weights = {
+        "rms": 0.25,
+        "dc_offset": 0.15,
+        "line_noise_ratio": 0.25,
+        "hf_lf_ratio": 0.10,
+        "clip_pct": 0.15,
+        "flatline_ratio": 0.05,
+        "drop_ct": 0.05
+    }
+    
+    composite = (
+        weights["rms"] * rms_score +
+        weights["dc_offset"] * dc_score +
+        weights["line_noise_ratio"] * lnr_score +
+        weights["hf_lf_ratio"] * hf_lf_score +
+        weights["clip_pct"] * clip_score +
+        weights["flatline_ratio"] * flat_score +
+        weights["drop_ct"] * dropout_score
+    )
+    
+    return round(composite * 100, 1)  # Return as percentage
+
 def bandpower_welch(signal: NDArray[np.float32], fs: int, band: Tuple[float, float]) -> float:
     f, pxx = welch(signal, fs=fs, nperseg=min(1024, len(signal)))
     lo, hi = band
@@ -331,8 +365,10 @@ def ingest(
                 "clip_pct": clip_pct(seg),
                 "flatline_ratio": flatline_ratio(seg, cfg.th_flat_std),
                 "drop_ct": dropout_count(seg),
+                "composite_sqi": 0.0,  # Will be computed below
                 "flags": 0,
             }
+            sqi["composite_sqi"] = composite_sqi(sqi)
             sqi_rows.append(sqi)
 
             # Automated event detection
@@ -404,6 +440,76 @@ def ingest(
 
 
 # -------------------------
+# Status command
+# -------------------------
+@app.command()
+def status(
+    session: Path = typer.Option(..., exists=True, help="Session dir with sqi.parquet"),
+    top_n: int = typer.Option(10, help="Number of worst channels to show"),
+    refresh: float = typer.Option(2.0, help="Refresh interval in seconds"),
+):
+    """Show live status of worst channels based on composite SQI scores."""
+    import time
+    from rich.console import Console
+    from rich.table import Table
+    from rich.live import Live
+    
+    console = Console()
+    
+    def generate_table():
+        table = Table(title=f"PhysioQC Status - Top {top_n} Worst Channels")
+        table.add_column("Rank", style="cyan", no_wrap=True)
+        table.add_column("Channel", style="magenta")
+        table.add_column("Composite SQI", style="red")
+        table.add_column("RMS", style="yellow")
+        table.add_column("Line Noise", style="yellow")
+        table.add_column("Clipping %", style="yellow")
+        table.add_column("Last Update", style="green")
+        
+        sqi_path = session / "sqi.parquet"
+        if not sqi_path.exists():
+            table.add_row("N/A", "No data", "N/A", "N/A", "N/A", "N/A", "N/A")
+            return table
+        
+        try:
+            df = pd.read_parquet(sqi_path)
+            if df.empty:
+                table.add_row("N/A", "No data", "N/A", "N/A", "N/A", "N/A", "N/A")
+                return table
+            
+            # Get latest SQI for each channel
+            latest_sqi = df.groupby('ch').tail(1).copy()
+            latest_sqi = latest_sqi.sort_values('composite_sqi').head(top_n)
+            
+            for i, (_, row) in enumerate(latest_sqi.iterrows(), 1):
+                # Color coding based on SQI score
+                sqi_color = "red" if row['composite_sqi'] < 50 else "yellow" if row['composite_sqi'] < 80 else "green"
+                
+                table.add_row(
+                    str(i),
+                    row['ch'],
+                    f"[{sqi_color}]{row['composite_sqi']:.1f}[/{sqi_color}]",
+                    f"{row['rms']:.4f}",
+                    f"{row['line_noise_ratio']:.3f}",
+                    f"{row['clip_pct']:.1%}",
+                    datetime.fromtimestamp(row['t_end'] / 1e9).strftime("%H:%M:%S")
+                )
+                
+        except Exception as e:
+            table.add_row("ERROR", str(e), "N/A", "N/A", "N/A", "N/A", "N/A")
+        
+        return table
+    
+    try:
+        with Live(generate_table(), refresh_per_second=1/refresh, console=console) as live:
+            while True:
+                live.update(generate_table())
+                time.sleep(refresh)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Status monitoring stopped.[/yellow]")
+
+
+# -------------------------
 # Annotate
 # -------------------------
 @app.command()
@@ -467,6 +573,7 @@ def info():
     typer.echo("Available Commands:")
     typer.echo("  simulate - Generate synthetic multichannel signal")
     typer.echo("  ingest   - Compute SQIs + auto-events over sliding windows")
+    typer.echo("  status   - Show live status of worst channels")
     typer.echo("  annotate - Append keypress annotations to events.jsonl")
     typer.echo("  info     - Show this information")
 
